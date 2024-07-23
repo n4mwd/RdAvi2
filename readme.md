@@ -1,6 +1,7 @@
 # **RdAvi2 -- Read AVI 2.0**
 
 #### AVI File Format Display Program - Written by Dennis Hawkins April 18, 2024.
+#### Version 1.01 released on July 23, 2024
 
 This program is a command line utility that will read an AVI file,
 including those that are over 2GB in size, and display the internal AVI
@@ -12,11 +13,21 @@ This program was developed in C using Borland C++ v5.02 running under
 Wine on a Linux development system. So it runs under windows, from Win95
 through Windows 11, or under Linux using Wine.
 
-To run it from a windows command prompt, enter the following:
+As of version 1.01, the program will also compile and run with Tiny C Compiler (TCC) 
+and run directly under linux.
+
+The TCC version does not currently support files over 4GB, but does fully support 
+Open DML files less than 4GB.
+
+It has not been compiled with GCC or CLANG, but these compilers have a similar syntax 
+to TCC, so they should probably work without a lot of modification.  Consult the
+rdavi2.h file for possible options.
+
+To run it from a command prompt, enter the following:
 
 C:\\\>  **RdAvi2 YourAviFile.avi**
 
-To run under Linux, wine must be installed, and then enter:
+To run the windows executable under Linux, wine must be installed, and then enter:
 
 user@mx: \~\$ **wine RdAvi2.exe YourAviFile.avi**
 
@@ -28,14 +39,20 @@ a file. Such as:
 
 C:\\\> **RdAvi2 YourAviFile.avi  > output.txt**
 
+If anyone has a suggestion for possible command line switches, let me know 
+at n4mwd@yahoo.com .
+
 ## Sample Output:
+The following is a snippet of an actual output:
+
     ================================
 
     Display the contents and file structure of an AVI file.
     This program will work on most AVI files including Open-DML
     files that are bigger than 4GB.
 
-    RdAvi2 - RIFF AVI 2.0 Format Reader (April 18, 2024) By Dennis Hawkins
+    RdAvi2 - RIFF AVI 2 Format Reader (April 18, 2024) By Dennis Hawkins
+    Version 1.01 released on July 23, 2024 
     Based on readavi by Michael Kohn (http://www.mikekohn.net)
     Copyright 2024 by Dennis Hawkins, BSD License applies.
 
@@ -130,34 +147,58 @@ MsVcRt stuff to find and install. The exception is that if you are going
 to run it under Linux, you will need to install WINE to enable Windows
 compatibility.
 
+Starting  with version 1.01, the program will compile into a native Linux 
+executable with the Tiny C Compiler (TCC) and probably also GCC and CLANG. 
+Use the following command line to compile with TCC:
+
+    $> tcc -o rdavi2 -w codecs.c file64.c fileutil.c rdavi2.c
+
 Borland C++ compiles ANSI C syntax so most other 32 bit ANSI C compilers
 will likely work fine with little to no code modification. One thing
-that might not work right in other compilers is the way that I handle
-FourCC codes and tags.
+in version 1.0 that didn't work right in other compilers is the way that 
+I handle FourCC codes and tags.
 
-When I read a FourCC tag into memory, I read it as a 4 character string
-buffer, then cast that to a DWORD for storage. Then, later in the
-program when I need to compare that to a known tag value, I overstuff
-the character quotes to form a multi-character literal. So if I have the
-tag from the file in dwTag, I can simply compare it to say 'RIFF',
-like:
+I make extensive use of the C language's support for multi-character literals.
+This is where a character literal that would normally be something like 'A' 
+is extended to four characters such as 'RIFF'.  This is allowed because the
+CPU running the code is at least 32 bits (4 bytes).
 
-``` 
-if (dwTag == ‘RIFF’) <do something>
-```
-I have seen other people's code where they painstakingly manually
-reverse the buffer characters after reading, and then set up some sort
-of macro to reverse multi-character literals so that the order matches.
-I skipped all the reversing stuff and everything worked out just fine
-with the Borland compiler. I mention this because I don't think the way
-Borland handles multi-character literals is a standard so other
-compilers may fail with this code. In that case, a reversing macro may
-be necessary for multi-character literals used in this program.
+Note that a multi-character literal is not the same thing as a C string.  A
+C string would be defined with double quotes like "RIFF".  Using multi-character
+literals makes the program very efficient because now simple 'if' statements 
+will work as well as 'switch()' statements.  So the following construct works:
+
+    switch (varstr)
+    {
+        case 'RIFF':
+           // do something
+           break;
+           
+        case 'LIST':
+            // do something
+            break;
+    }
+
+The only problem with multi-character literals is that for whatever reason, 
+the byte ordering has not been standardized.  So a compiler like Borland orders 
+the DWORD in Little Endian order, the same as the x86 processor, but other 
+compilers, like TCC, order the DWORD in Big Endian order.
+
+So the code compiled fine in Borland, but bombed in TCC.  To get around this, I 
+created a macro that automatically detects which Endianess is being used.  If 
+Big Endian order is detected, the macro reverses the order into Little Endian.
+
+Another major difference in the way Borland and TCC compile is how structures 
+are packed.  I found that TCC was distorting structures rather than just aligning 
+them as a whole.  Borland doesn't distort structures.  To get around this, it 
+was necessary to use a pragma to effectively disable packing and alignment when
+using TCC.
+
 
 ### BSD License
 
-RdAvi2.exe - Copyright (c) 2024 by Dennis Hawkins. All rights reserved.<br />
-Inspired by: ReadAvi.exe by Michael Kohn\<mike@mikekohn.net\>(http://www.mikekohn.net/)<br />
+RdAvi2.exe - Copyright (c) 2024 by Dennis Hawkins. <n4mwd@yahoo.com> All rights reserved.<br />
+Inspired by: ReadAvi.exe by Michael Kohn <mike@mikekohn.net> (http://www.mikekohn.net/)<br />
 Although not required, attribution is requested for any source code used
 by others.
 
@@ -168,5 +209,7 @@ materials related to such distribution and use acknowledge that the
 software was developed by the copyright holder. The name of the
 copyright holder may not be used to endorse or promote products derived
 from this software without specific prior written permission. THIS
-SOFTWARE IS PROVIDED \`\'AS IS? AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+SOFTWARE IS PROVIDED \`AS IS\' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, 
+INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND 
+FITNESS FOR A PARTICULAR PURPOSE.
 

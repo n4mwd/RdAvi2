@@ -165,7 +165,7 @@ static CODEC_DESC CodecTbl[] =
     { 'YVU9', "YVU9 Planar" },
     { 'YVYU', "YVYU 4:2:2 byte ordering" },
     { 'ZPEG', "Video Zipper" },
-    { NULL,   NULL }
+    { 0,   NULL }
 };
 
 // Registered formats from:
@@ -279,7 +279,7 @@ CODEC_DESC AudTbl[] =
     { 0x2000, "AC3 DVM" },    // WAVE_FORMAT_DVM
     { 0x2001, "DTS" },        // WAVE_FORMAT_DTS
     { 0xFFFE, "Wave Format Extensible" }, // WAVE_FORMAT_EXTENSIBLE - special format flag
-    { NULL, NULL }
+    { 0, NULL }
 };
 
 
@@ -309,7 +309,7 @@ static CODEC_DESC InfoTbl[] =
     { 'ISRC', "Source" },
     { 'ISRF', "Source Form" },
     { 'ITCH', "Technician" },
-    { NULL, NULL }
+    { 0, NULL }
 };
 
 
@@ -342,7 +342,7 @@ char *LookupFourCC(DWORD inFcc)
     for (i = 0; i < 4; i++)
         str[i] = (char) toupper(str[i]);
 
-    return(LookupFCCsub(inFcc, CodecTbl, "Unknown FourCC"));
+    return(LookupFCCsub(FIX_LIT(inFcc), CodecTbl, "Unknown FourCC"));
 }
 
 // lookup audio handler
@@ -357,7 +357,7 @@ char *LookupFormat(DWORD FmtNum)
 
 char *LookupINFO(DWORD inInfo)
 {
-    return(LookupFCCsub(inInfo, InfoTbl, "Unknown INFO element"));
+    return(LookupFCCsub(FIX_LIT(inInfo), InfoTbl, "Unknown INFO element"));
 }
 
 

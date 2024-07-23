@@ -35,16 +35,38 @@ char *QWORD2HEX(QWORD val)
     return(outstr);
 }
 
-int read_long(FILE *in)
+LONG read_long(FILE *in)
 {
     int c;
 
     if (!in) return(-1);
-    File64Read(in, &c, sizeof(long));
+    File64Read(in, &c, sizeof(LONG));
 
     return c;
 }
 
+
+// This function is only used if the compiler treats multi-character literals
+// as BIG ENDIAN order.
+// It reverses the order of a literal into Little Endian order and is called
+// by FIX_LIT() macro
+
+
+#if defined(BE_MC_LIT)
+
+DWORD ReverseLiteral(DWORD val)
+{
+    BYTE out[4], *in = (BYTE *) &val;
+
+    out[0] = in[3];
+    out[1] = in[2];
+    out[2] = in[1];
+    out[3] = in[0];
+
+    return(*(DWORD *) out);
+}
+
+#endif
 
 
 // Read four chars from the file and convert to a Little Endian integer.
@@ -59,41 +81,40 @@ int read_long(FILE *in)
 
 FOURCC ReadFCC(FILE *in, int *StreamNum)
 {
-    BYTE buf[4];
+    char Buf[15];
     FOURCC val;
     int  ret;
 
+    memset(Buf, 0, sizeof(Buf));
     if (!in)return(-1);  // no file to read
     if (StreamNum) *StreamNum = -1;
-    ret = File64Read(in, buf, 4);
+    ret = File64Read(in, Buf, 4);
     if (ret != 4) return(-1);    // EOF
 
-    val = *((FOURCC *)buf);
+    val = *((FOURCC *)Buf);  // val is LE when CPU is LE
 
 
     // Note that both '##ix' and 'ix##' can exist
     if (StreamNum)   // attempt to get stream number
     {
-        FOURCC v2, v3;
+        char *BufLeft = Buf + 5;
+        char *BufRight = Buf + 10;
 
         // look for ##db, ##dc, ##wb, ##tx, ##ix or ix##
-        v2 = (val >> 16) & 0x0000FFFF;     // left side
-        v3 = val & 0x0000FFFF;             // right side
-        if (v3 == 'ix')
+        memcpy(BufLeft, Buf, 2);
+        memcpy(BufRight, Buf + 2, 2);
+        BufRight[2] = ',';
+        if (strcmp(BufLeft, "ix") == 0)   // special case for 'ix##'
         {
-            buf[0] = buf[2];
-            buf[1] = buf[3];
-            buf[2] = 0;
-            *StreamNum = strtol((char *) buf, NULL, 16);
-            val = ('##' << 16) | v3;    // standardize FourCC
+            *StreamNum = strtol(BufRight, NULL, 16);
+            memcpy(Buf + 2, "##", 2);        // standardize FourCC
         }
-        else if (v2 == 'db' || v2 == 'dc' || v2 == 'wb' ||
-                 v2 == 'tx' || v2 == 'ix' || v2 == 'pc')
+        else if (strstr("dc,db,wb,ix,tx,pc,", BufRight))  // '##dc' etc
         {
-            buf[2] = 0;
-            *StreamNum = strtol((char *) buf, NULL, 16);
-            val = (v2 << 16) | '##';    // standardize FourCC
+            *StreamNum = strtol(BufLeft, NULL, 16);
+            memcpy(Buf, "##", 2);        // standardize FourCC
         }
+        val = *((FOURCC *)Buf);
     }
 
     return(val);   // return FOURCC

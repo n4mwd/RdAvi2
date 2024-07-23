@@ -19,11 +19,35 @@ Although not required, attribution is requested for any source code
 used by others.
 */
 
+#if defined(__GNUC__)
+#error GCC is not tested.  Comment out this line and compile at your own risk.
+#define __TINYC__
+#endif
 
-// *********** Uncomment define before to only allow files < 4GB
-//#define NO_HUGE_FILES
+#if defined(__clang__)
+#error clang is not tested.  Comment out this line and compile at your own risk.
+#define __TINYC__
+#endif
 
-#if defined(NO_HUGE_FILES)       // Files must be less than 4GB
+#if defined(__TINYC__)
+  // TINYC is a 64 bit compiler.
+  #pragma pack(push, 1)
+  #define NO_HUGE_FILES
+  #define min(X, Y) (((X) < (Y)) ? (X) : (Y))
+  typedef unsigned long long QWORD;   // different
+
+#endif
+
+#if defined(__BORLANDC__)
+  // Borland C is a 32bit compiler.
+  typedef unsigned __int64 QWORD;     // different
+#endif
+
+#if defined(__WIN32__)        // Large file support via windows calls
+  #include <windows.h>
+  #include <stdio.h>
+  #include <io.h>
+#else
   #include <stdio.h>
   #include <string.h>
   #include <stdlib.h>
@@ -32,12 +56,12 @@ used by others.
   #include <sys/stat.h>
   #define FALSE  0
   #define TRUE   !FALSE
-  typedef unsigned long FOURCC;
-  typedef unsigned long DWORD;
-  typedef long LONG;
+
+  typedef unsigned int   FOURCC;
+  typedef unsigned int   DWORD;
+  typedef int            LONG;     // long is 8 bytes on 64bit compilers, must be 4 bytes here.
   typedef unsigned short WORD;
-  typedef unsigned char BYTE;
-  typedef unsigned __int64 QWORD;
+  typedef unsigned char  BYTE;
 
   typedef struct
   {
@@ -63,13 +87,25 @@ used by others.
       BYTE Data4[8];
   } GUID;
 
-#elif defined(__WIN32__)        // Large file support via windows calls
-  #include <windows.h>
-  #include <stdio.h>
-  #include <io.h>
-  typedef unsigned __int64 QWORD;
+#endif
+
+
+// *********** Uncomment define before to only allow files < 4GB
+//#define NO_HUGE_FILES
+
+
+// Test whether compiler uses LE or BE order for multi-character literals
+#if '0123' == 0x33323130
+  #define LE_MC_LIT   // Borland LE
 #else
-  #error  Large file library not available, define NO_HUGE_FILES to compile for <4GB files only.
+  #define BE_MC_LIT   // Most other compilers BE
+#endif
+
+#if defined(BE_MC_LIT)    // make sure literal is in Little Endian Order
+  // must reverse
+  #define FIX_LIT(x)  ReverseLiteral((DWORD)(x))
+#else
+  #define FIX_LIT(x)  ((DWORD)(x))
 #endif
 
 #define WAVE_FORMAT_EXTENSIBLE 0xFFFE
@@ -99,7 +135,7 @@ typedef struct
 #define 	AVIF_WASCAPTUREFILE  0x00010000
 #define 	AVIF_COPYRIGHTED     0x00020000
 
-// Due to multiple definitions of AVI Stram Header we have to define all three.
+// Due to multiple definitions of AVI Stream Header we have to define all three.
 
 typedef struct     // strh - compact version - 48 bytes
 {
@@ -331,15 +367,16 @@ void   File64SetBase(FILE *fp, int delta);
 QWORD  File64GetBase(void);
 FILE  *File64Open(char *fname, char *mode);
 void   File64Close(FILE *fp);
-size_t File64Read(FILE *fp, void *buffer, size_t len);
-int    File64SetPos(FILE *fp, long offset, int whence);
+size_t File64Read(FILE *fp, void *buffer, int len);
+int    File64SetPos(FILE *fp, LONG offset, int whence);
 DWORD  File64GetPos(FILE *fp);
+DWORD  ReverseLiteral(DWORD val);
 
 
 // FileUtil.c prototypes
 
 char *QWORD2HEX(QWORD val);
-int read_long(FILE *in);
+LONG read_long(FILE *in);
 FOURCC ReadFCC(FILE *in, int *StreamNum);
 
 

@@ -26,7 +26,7 @@ we are forced to call the Windows API for this.
 
 // Define NO_HUGE_FILES in rdavi2.h to only use 32bit file addressing.
 
-#include "RdAvi2.h"
+#include "rdavi2.h"
 
 
 // SeekBase is an unsigned 64 value that gets added to the offset to form
@@ -51,12 +51,11 @@ static QWORD SeekBase = 0;   // base of file pos, gets added to seeks.
 void File64SetBase(FILE *fp, int delta)
 {
 #if defined(NO_HUGE_FILES)
-    SeekBase = 0;
-    if (delta && fp) fp->fd = fp->fd;  // to get rid of compiler warning
+    SeekBase = (DWORD)(ftell(fp) & 0xFFFFFFFF) + delta;
 #else
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     DWORD offset;
-    long OfsHigh = 0;
+    LONG OfsHigh = 0;
 
     // Get current file location as a two part pointer
     offset = SetFilePointer(hFile, 0, (LONG *) &OfsHigh, FILE_CURRENT);
@@ -99,10 +98,10 @@ void File64Close(FILE *fp)
 // Read a block of bytes from a file.
 // Returns the number of bytes actually read.
 
-size_t File64Read(FILE *fp, void *buffer, size_t len)
+size_t File64Read(FILE *fp, void *buffer, int len)
 {
 #if defined(NO_HUGE_FILES)
-    return(fread(buffer, 1, len, fp));
+    return(fread(buffer, 1, (size_t) len, fp));
 #else
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     DWORD cnt = 0;
@@ -120,12 +119,19 @@ size_t File64Read(FILE *fp, void *buffer, size_t len)
 // else it returns a non-zero value.
 // Note that Offset is based off SeekBase.
 
-int File64SetPos(FILE *fp, long offset, int whence)
+int File64SetPos(FILE *fp, LONG offset, int whence)
 {
 #if defined(NO_HUGE_FILES)
-    return(fseek(fp, offset, whence));
+
+    // if whence is SEEK_SET (FILE_BEGIN) we must apply SeekBase
+    if (whence == SEEK_SET)
+    {
+        offset += SeekBase;
+    }
+
+    return(fseek(fp, (long int) offset, whence));
 #else
-    long ret, SaveHigh, OfsHigh = 0, *pOff = NULL;
+    LONG ret, SaveHigh, OfsHigh = 0, *pOff = NULL;
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     QWORD AbsPos;
 
@@ -133,8 +139,8 @@ int File64SetPos(FILE *fp, long offset, int whence)
     if (whence == SEEK_SET)
     {
         AbsPos = SeekBase + offset;
-        OfsHigh = (long)(AbsPos >> 32);
-        offset = (long)(AbsPos & 0xFFFFFFFF);
+        OfsHigh = (LONG)(AbsPos >> 32);
+        offset = (LONG)(AbsPos & 0xFFFFFFFF);
         pOff = &offset;
     }
     SaveHigh = OfsHigh;
@@ -154,7 +160,9 @@ int File64SetPos(FILE *fp, long offset, int whence)
 DWORD File64GetPos(FILE *fp)
 {
 #if defined(NO_HUGE_FILES)
-    return(ftell(fp));
+    DWORD Offset = (DWORD) ftell(fp);   // Get 32 bit absolute offset
+
+    return(Offset - SeekBase);
 #else
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     DWORD Offset, OfsHigh = 0;
