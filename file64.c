@@ -52,6 +52,8 @@ void File64SetBase(FILE *fp, int delta)
 {
 #if defined(NO_HUGE_FILES)
     SeekBase = (DWORD)(ftell(fp) & 0xFFFFFFFF) + delta;
+#elif defined(__TINYC__)
+    SeekBase = ftell(fp) + delta;
 #else
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     DWORD offset;
@@ -102,6 +104,8 @@ size_t File64Read(FILE *fp, void *buffer, int len)
 {
 #if defined(NO_HUGE_FILES)
     return(fread(buffer, 1, (size_t) len, fp));
+#elif defined(__TINYC__)
+    return(fread(buffer, 1, (size_t) len, fp));
 #else
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     DWORD cnt = 0;
@@ -121,17 +125,18 @@ size_t File64Read(FILE *fp, void *buffer, int len)
 
 int File64SetPos(FILE *fp, LONG offset, int whence)
 {
-#if defined(NO_HUGE_FILES)
+#if defined(NO_HUGE_FILES) || defined(__TINYC__)
+    QWORD LongOffset = offset;
 
     // if whence is SEEK_SET (FILE_BEGIN) we must apply SeekBase
     if (whence == SEEK_SET)
     {
-        offset += SeekBase;
+        LongOffset += SeekBase;   // Seekbase is 32 bits when NO_HUGE_FILES is defined
     }
 
-    return(fseek(fp, (long int) offset, whence));
+    return(fseek(fp, (long int) LongOffset, whence));
 #else
-    LONG ret, SaveHigh, OfsHigh = 0, *pOff = NULL;
+    LONG ret, SaveHigh, OfsHigh = 0, *pOffHigh = NULL;
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     QWORD AbsPos;
 
@@ -141,10 +146,10 @@ int File64SetPos(FILE *fp, LONG offset, int whence)
         AbsPos = SeekBase + offset;
         OfsHigh = (LONG)(AbsPos >> 32);
         offset = (LONG)(AbsPos & 0xFFFFFFFF);
-        pOff = &offset;
+        pOffHigh = &OfsHigh;
     }
     SaveHigh = OfsHigh;
-    ret = SetFilePointer(hFile, offset, pOff, whence);
+    ret = SetFilePointer(hFile, offset, pOffHigh, whence);
 
     return(ret != offset || SaveHigh != OfsHigh);
 #endif
@@ -159,10 +164,10 @@ int File64SetPos(FILE *fp, LONG offset, int whence)
 
 DWORD File64GetPos(FILE *fp)
 {
-#if defined(NO_HUGE_FILES)
-    DWORD Offset = (DWORD) ftell(fp);   // Get 32 bit absolute offset
+#if defined(NO_HUGE_FILES) || defined(__TINYC__)
+    QWORD Offset = (QWORD) ftell(fp);   // Get 64 bit absolute offset
 
-    return(Offset - SeekBase);
+    return((DWORD)(Offset - SeekBase));
 #else
     HANDLE hFile = (HANDLE)_get_osfhandle(fileno(fp));
     DWORD Offset, OfsHigh = 0;
