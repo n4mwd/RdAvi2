@@ -357,7 +357,7 @@ char *LookupFormat(DWORD FmtNum)
 
 char *LookupINFO(DWORD inInfo)
 {
-    return(LookupFCCsub(FIX_LIT(inInfo), InfoTbl, "Unknown INFO element"));
+    return(LookupFCCsub(inInfo, InfoTbl, "Unknown INFO element"));
 }
 
 

@@ -35,51 +35,33 @@ char *QWORD2HEX(QWORD val)
     return(outstr);
 }
 
-LONG read_long(FILE *in)
+DWORD ReadDWORD(MFILE *in)
 {
     int c;
 
     if (!in) return(-1);
-    File64Read(in, &c, sizeof(LONG));
+    File64Read(in, &c, sizeof(DWORD));
 
     return c;
 }
 
 
-// This function is only used if the compiler treats multi-character literals
-// as BIG ENDIAN order.
-// It reverses the order of a literal into Little Endian order and is called
-// by FIX_LIT() macro
 
+// Read four bytes from the current position in the file and convert
+// to a Little Endian integer.  If StreamNum is not NULL, and the FCC
+// chars are '##db', '##dc', '##wb', '##tx', or 'ix##' (where ##
+// represents a stream number like '00' or '02'), the stream number
+// portion is returned in StreamNum as an integer.  Also, the FCC is
+// converted to a standard form like '##dc' (actual '#' characters) and
+// returned instead of the original like '00dc' or '01dc'.  This is so
+// the program can compare against a consistent value.  The ## stream
+// number portion of the fcc is a 2 digit decimal number represented by
+// two ascii characters with a leading '0' if the stream number is less
+// than 10.  If StreamNum is not null, and no '##' digits were found,
+// StreamNum is set to -1 to indicate that the stream number is invalid.
+// If there was a problem reading the file, the function returns -1.
 
-#if defined(BE_MC_LIT)
-
-DWORD ReverseLiteral(DWORD val)
-{
-    BYTE out[4], *in = (BYTE *) &val;
-
-    out[0] = in[3];
-    out[1] = in[2];
-    out[2] = in[1];
-    out[3] = in[0];
-
-    return(*(DWORD *) out);
-}
-
-#endif
-
-
-// Read four chars from the file and convert to a Little Endian integer.
-// If StreamNum is not NULL, and the chars are ##db, ##dc, ##wb, ##tx, or ix##,
-// the stream number is returned in StreamNum.  Also, the FCC is converted
-// to a standard form like ##dc instead of the original like 00dc or 01dc.
-// This is so the program can compare against a consistant value.
-// The ## stream number portion of the fourcc is a 2 digit hex number and is
-// not allowed to contain lower case hex digits (a-f), these must be uppercase
-// hex digits (A-F). If lower case was allowed, then a fourcc like 'dcdb'
-// would cause ambiguity.
-
-FOURCC ReadFCC(FILE *in, int *StreamNum)
+FOURCC ReadFCC(MFILE *in, int *StreamNum)
 {
     char Buf[15];
     FOURCC val;
@@ -88,6 +70,7 @@ FOURCC ReadFCC(FILE *in, int *StreamNum)
     memset(Buf, 0, sizeof(Buf));
     if (!in)return(-1);  // no file to read
     if (StreamNum) *StreamNum = -1;
+
     ret = File64Read(in, Buf, 4);
     if (ret != 4) return(-1);    // EOF
 
@@ -97,29 +80,33 @@ FOURCC ReadFCC(FILE *in, int *StreamNum)
     // Note that both '##ix' and 'ix##' can exist
     if (StreamNum)   // attempt to get stream number
     {
-        char *BufLeft = Buf + 5;
-        char *BufRight = Buf + 10;
+        Buf[4] = ',';  // add comma for search
+        *StreamNum = -1;
 
-        // look for ##db, ##dc, ##wb, ##tx, ##ix or ix##
-        memcpy(BufLeft, Buf, 2);
-        memcpy(BufRight, Buf + 2, 2);
-        BufRight[2] = ',';
-        if (strcmp(BufLeft, "ix") == 0)   // special case for 'ix##'
+        // Check if 'ix##'
+        if (Buf[0] == 'i' && Buf[1] == 'x')  // special case for 'ix##'
         {
-            *StreamNum = strtol(BufRight, NULL, 16);
-            memcpy(Buf + 2, "##", 2);        // standardize FourCC
+            if (isdigit(Buf[2]) && isdigit(Buf[3]))
+                *StreamNum = (Buf[2] - '0') * 10 + (Buf[3] - '0');
+            Buf[2] = Buf[3] = '#';           // standardize FourCC
         }
-        else if (strstr("dc,db,wb,ix,tx,pc,", BufRight))  // '##dc' etc
+
+        // check if '##db', '##dc', '##wb', '##tx', '##ix'
+        else if (strstr("dc,db,wb,ix,tx,pc,", Buf + 2))  // '##dc' etc
         {
-            *StreamNum = strtol(BufLeft, NULL, 16);
-            memcpy(Buf, "##", 2);        // standardize FourCC
+            if (isdigit(Buf[0]) && isdigit(Buf[1]))
+                *StreamNum = (Buf[0] - '0') * 10 + (Buf[1] - '0');
+            Buf[0] = Buf[1] = '#';           // standardize FourCC
         }
+
+        if (*StreamNum == -1) return(-1);
         val = *((FOURCC *)Buf);
     }
+
+    val = FIX_LIT(val);      // FOURCC should now be in correct endian order
 
     return(val);   // return FOURCC
 
 }
-
 
 

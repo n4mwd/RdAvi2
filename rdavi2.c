@@ -1,5 +1,5 @@
 /*
-RdAvi2.exe - Copyright (c) 2024 by Dennis Hawkins. All rights reserved.
+RdAvi2.exe - Copyright (c) 2025 by Dennis Hawkins. All rights reserved.
 Inspired by: ReadAvi.exe by Michael Kohn<mike@mikekohn.net> (http://www.mikekohn.net/)
 
 BSD License
@@ -18,6 +18,30 @@ AND FITNESS FOR A PARTICULAR PURPOSE.
 Although not required, attribution is requested for any source code
 used by others.
 
+
+Compilation
+Borland C (Windows)
+bcc32 rdavi2.c codecs.c  fileutil.c file64.c
+
+MinGW (Windows) - 32-bit
+i686-w64-mingw32-gcc file64.c codecs.c rdavi2.c fileutil.c -o rdavi2.exe
+
+GCC (Linux) - 32-bit
+gcc -m32 file64.c codecs.c rdavi2.c fileutil.c -o rdavi2
+
+GCC (Linux) - 64-bit
+gcc -m64 file64.c codecs.c rdavi2.c fileutil.c -o rdavi2
+
+TINY C - 32-bit
+tcc -m32 -w file64.c codecs.c rdavi2.c fileutil.c -o rdavi2
+
+TINY C - 64-bit
+tcc -m64 -w file64.c codecs.c rdavi2.c fileutil.c -o rdavi2
+
+Note: Both 32-bit and 64-bit builds are fully supported.
+The code automatically adapts based on available functions.
+
+
 */
 
 #include "rdavi2.h"
@@ -26,9 +50,21 @@ used by others.
 static DWORD G_movi_offset = 0;   // offset of the 'movi' tag
 static int Level = 0;
 static char indent[80] = {0};
+static int SuppressFlag = TRUE;
 #define CHARS_PER_TAB   2
 
 
+#if !defined(__BORLANDC__)
+// Make a compatible string out of a FourCC
+// There is no zero terminator.
+char *Fcc2Str(FOURCC val)
+{
+    static DWORD tval;  // NOT THREAD SAFE
+    tval = FIX_LIT(val);
+    return((char *)&tval);   
+}
+
+#endif
 
 // Take a numerical offset relative to the Base file address and return
 // a pointer to an ascii string representing the full 64bit file location.
@@ -37,9 +73,9 @@ static char indent[80] = {0};
 // Because the string is returned as a pointer to a static buffer, this
 // cannot be used more than once in a function call.
 
-static char *GetOffsetStr(DWORD offset)
+static char *GetOffsetStr(MFILE *in, DWORD offset)
 {
-    QWORD base = File64GetBase();
+    QWORD base = File64GetBase(in);
     static char tmpstr[20];
 
     if (base)
@@ -90,16 +126,17 @@ static void CloseLevel(void)
 // Produce a HEX dump for an output.
 // Exactly chunk_len bytes are read and output.
 // Return 0 on success and -1 if EOF.
-// Output is suppressed after 16 lines.
+// Output can be suppressed after 16 lines.
 
 #define HEXSTART   (buf + 9)
 #define CHARSTART  (buf + 57)
 #define ENDNULL    73
 
-static int hex_dump_chunk(FILE *in, int chunk_len)
+static int hex_dump_chunk(MFILE *in, DWORD chunk_len)
 {
     BYTE CharStr[17];
-    int n, i, linecnt = 0, bcnt, ret, printing = TRUE, poff;
+    DWORD n, poff;
+    int i, linecnt = 0, bcnt, ret, printing = TRUE;
     DWORD offset = File64GetPos(in);
     char buf[80], tmpstr[32];
 
@@ -113,7 +150,7 @@ static int hex_dump_chunk(FILE *in, int chunk_len)
     for (n = 0; n < chunk_len; )
     {
         // eject the previous line
-        if (linecnt++ == 16) printing = FALSE;
+        if (SuppressFlag && linecnt++ == 16) printing = FALSE;
 
         // start new line
         memset(buf, ' ', ENDNULL);      // clear print buffer
@@ -141,7 +178,7 @@ static int hex_dump_chunk(FILE *in, int chunk_len)
         for (i = 0; i < bcnt; i++)
         {
             BYTE ch = CharStr[i];
-            
+
             sprintf(tmpstr, "%02X", (DWORD) ch);
             memcpy(HEXSTART + (i + poff) * 3, tmpstr, 2);
             CHARSTART[i + poff] = (char)
@@ -172,16 +209,22 @@ static int hex_dump_chunk(FILE *in, int chunk_len)
 #define AVIIF_NO_TIME	    0x00000100L // this frame doesn't take any time
 #define AVIIF_COMPUSE       0x0FFF0000L
 
+// Legacy index
 
-static int parse_idx1(FILE *in, int chunk_len)
+static int parse_idx1(MFILE *in, DWORD chunk_len)
 {
     AVIINDEXENTRY index_entry;
     int t, br;
     DWORD flags;
     char buf[80];
+    int maxlines;
+    DWORD Base = (DWORD) -1;
 
-    printf("%sCkId  Flags                           Location    Length\n", indent);
-    printf("%s====  ==============================  ==========  ==========\n", indent);
+    maxlines = 2000000000;  // close to max int
+    if (SuppressFlag) maxlines = 16;
+
+    printf("%sCkId  Flags                           Offset      Location    Length\n", indent);
+    printf("%s====  ==============================  ==========  ==========  ==========\n", indent);
 
     for (t = 0; t < (int)(chunk_len / sizeof(AVIINDEXENTRY)); t++)
     {
@@ -193,7 +236,17 @@ static int parse_idx1(FILE *in, int chunk_len)
             return(-1);
         }
 
-        if (t < 16)
+        if (Base == (DWORD) -1)    // first one
+        {
+            // Determine the base address used for index
+            if (index_entry.dwChunkOffset == 4)
+            {
+                Base = G_movi_offset - 4;
+            }
+            else Base = 0;
+        }
+
+        if (t < maxlines)
         {
             buf[0] = 0;
             printf("%s%.4s  ", indent, &index_entry.ckid);
@@ -203,13 +256,16 @@ static int parse_idx1(FILE *in, int chunk_len)
             strcat(buf, (flags & AVIIF_NO_TIME)  ? "NOTIME " : "       ");
             strcat(buf, (flags & AVIIF_FIRSTPART) ? "1st " : "    ");
             strcat(buf, (flags & AVIIF_LASTPART)  ? "LAST " : "     ");
-            printf("%s 0x%08X  0x%08X\n", buf,
-                G_movi_offset - 4 + index_entry.dwChunkOffset,
+            printf("%s 0x%08X  0x%08X  0x%08X\n", buf,
+                index_entry.dwChunkOffset,
+                Base + index_entry.dwChunkOffset,
                 index_entry.dwChunkLength);
         }
     }
 
-    if (t >= 16) printf("%s**Suppressed %d index entries**\n", indent, t - 16);
+    printf ("\n%s Index base address is: 0x%08X\n", indent, Base);
+    if (t >= maxlines)
+        printf("%s**Suppressed %d index entries**\n", indent, t - maxlines);
     else printf("\n");
 
     return 0;
@@ -221,7 +277,7 @@ static int parse_idx1(FILE *in, int chunk_len)
 // Read and print Main AVI Header.
 // Return 0 on success or non-zero if not.
 
-static int read_avi_header(FILE *in)
+static int read_avi_header(MFILE *in)
 {
     MainAVIHeader avi_header;
     DWORD offset = File64GetPos(in);
@@ -263,7 +319,7 @@ static int read_avi_header(FILE *in)
 // StrType is 0 for Video and 1 for audio streams.
 // Return 0 if OK, or -1 on EOF.
 
-static int read_stream_header(FILE *in, DWORD size)
+static int read_stream_header(MFILE *in, DWORD size)
 {
     AVIStreamHeader56 stream_header;
     DWORD offset = File64GetPos(in);
@@ -318,8 +374,8 @@ static int read_stream_header(FILE *in, DWORD size)
 
     printf("                offset=0x%lx\n", offset);
     printf("         Stream Header Version: %.4s (%d byte) version\n",
-                                  (char *)&stream_header.fccType, size);
-    printf("                   FourCC Type: %.4s\n", (char *)&stream_header.fccType);
+                                  &stream_header.fccType, size);
+    printf("                   FourCC Type: %.4s\n", &stream_header.fccType);
     if (FIX_LIT(stream_header.fccType) == 'auds')
     {
         printf("                FourCC Handler: Not Used\n");
@@ -327,7 +383,7 @@ static int read_stream_header(FILE *in, DWORD size)
     else
     {
         printf("                FourCC Handler: %.4s - %s\n",
-                            (char *)&stream_header.fccHandler,
+                            &stream_header.fccHandler,
                             LookupFourCC(stream_header.fccHandler));
     }
     printf("                         Flags: %08x - %s\n", stream_header.Flags, flagstr);
@@ -349,7 +405,7 @@ static int read_stream_header(FILE *in, DWORD size)
 
 // Read Video Stream Format
 
-static int read_stream_format_vid(FILE *in, DWORD size)
+static int read_stream_format_vid(MFILE *in, DWORD size)
 {
     STREAMFORMATVID stream_format;
     VIDPALETTE pal[256];
@@ -401,7 +457,7 @@ static int read_stream_format_vid(FILE *in, DWORD size)
     printf("              number_of_planes: %d\n", stream_format.biPlanes);
     printf("                bits_per_pixel: %d\n", stream_format.bits_per_pixel);
     printf("              compression_type: %.4s - %s\n",
-                       (char *) &stream_format.biCompression,
+                       &stream_format.biCompression,
                        LookupFourCC(stream_format.biCompression));
     printf("           image_size_in_bytes: %d\n", stream_format.biSizeImage);
     printf("              x_pels_per_meter: %d\n", stream_format.biXPelsPerMeter);
@@ -440,7 +496,7 @@ static int read_stream_format_vid(FILE *in, DWORD size)
 
 // Read stream format structure for audio
 
-static int read_stream_format_auds(FILE *in, int size)
+static int read_stream_format_auds(MFILE *in, DWORD size)
 {
     STREAMFORMATAUD stream_format;
     MP3EXT mp3fmt;
@@ -537,7 +593,7 @@ static int read_stream_format_auds(FILE *in, int size)
 // Read stream format for closed captioning
 // Placeholder - not really supported
 
-static int read_stream_format_txts(FILE *in, int size)
+static int read_stream_format_txts(MFILE *in,  DWORD size)
 {
     return(hex_dump_chunk(in, size));
 
@@ -546,11 +602,11 @@ static int read_stream_format_txts(FILE *in, int size)
 
 // Display an open-DML index
 
-static int ProcessIndx(FILE *in, int chunk_size)
+static int ProcessIndx(MFILE *in, DWORD chunk_size)
 {
     INDX_CHUNK idx;   // Generic open-dml index header
     DWORD rb, irb, BytesLeft, br, pad, casetype;
-    int i, max;
+    int i, maxlines;
 
     // Read base structure if open-dml index
     memset(&idx, 0, sizeof(idx));
@@ -583,8 +639,7 @@ static int ProcessIndx(FILE *in, int chunk_size)
                            "of index.\n", indent);
                 irb = min(sizeof(SUPERINDEXENTRY), irb);
             }
-            printf(" for the stream '%.4s'.\n", (char *) &idx.dwChunkId);
-
+            printf(" for the stream '%.4s'.\n", &idx.dwChunkId);
             printf("%sEach index entry has %d bytes ", indent, idx.wLongsPerEntry * 4);
             printf("with %d entries in use.\n\n", idx.nEntriesInUse);
 
@@ -616,10 +671,14 @@ static int ProcessIndx(FILE *in, int chunk_size)
                 irb = min(sizeof(STDINDEXENTRY), irb);
             }
 
-            printf("%sAbsolute Location    Size        Keyframe\n", indent);
-            printf("%s==================   ==========  ========\n", indent);
-            max = min(16, idx.nEntriesInUse);
-            for (i = 0; i < (int) max; i++)
+            printf("%sThis ODML index has a base address of: 0x%s\n\n", indent,
+                    QWORD2HEX(idx.qwBaseOffset));
+
+            printf("%sOffset      Absolute Location   Size        Keyframe\n", indent);
+            printf("%s==========  ==================  ==========  ========\n", indent);
+            maxlines = idx.nEntriesInUse;
+            if (SuppressFlag && maxlines > 16) maxlines = 16;
+            for (i = 0; i < (int) maxlines; i++)
             {
                 STDINDEXENTRY entry;
 
@@ -631,14 +690,16 @@ static int ProcessIndx(FILE *in, int chunk_size)
                     printf("*** Unexpected End of File.\n");
                     return(-1);
                 }
-                printf("%s0x%s   0x%08X  %s\n", indent,
+                printf("%s0x%08X  0x%s  0x%08X  %s\n", indent,
+                    entry.dwOffset,
                     QWORD2HEX(idx.qwBaseOffset + (QWORD) entry.dwOffset),
                     entry.dwSize & 0x7FFFFFFF,
                     (entry.dwSize & 0x80000000) ? "NO" : "YES");
             }
 
-            if (max != (int) idx.nEntriesInUse)
-                printf("%s**Suppressed %d index entries**\n", indent, idx.nEntriesInUse - max);
+            if (maxlines != (int) idx.nEntriesInUse)
+                printf("%s**Suppressed %d index entries**\n",
+                    indent, idx.nEntriesInUse - maxlines);
 
             break;
 
@@ -650,10 +711,14 @@ static int ProcessIndx(FILE *in, int chunk_size)
                 irb = min(sizeof(FIELDINDEXENTRY), irb);
             }
 
-            printf("%sAbsolute Location   2nd Field Loc       Size        Keyframe\n", indent);
-            printf("%s==================  ==================  ==========  ========\n", indent);
-            max = min(16, idx.nEntriesInUse);
-            for (i = 0; i < (int) max; i++)
+            printf("%sThis index has a base address of: 0x%s\n\n", indent,
+                    QWORD2HEX(idx.qwBaseOffset));
+
+            printf("%sOffset      Absolute Location   2nd Field Loc       Size        Keyframe\n", indent);
+            printf("%s==========  ==================  ==================  ==========  ========\n", indent);
+            maxlines = idx.nEntriesInUse;
+            if (SuppressFlag && maxlines > 16) maxlines = 16;
+            for (i = 0; i < (int) maxlines; i++)
             {
                 FIELDINDEXENTRY entry;
 
@@ -666,7 +731,7 @@ static int ProcessIndx(FILE *in, int chunk_size)
                     return(-1);
                 }
                 // QWORD2HEX() cannot be called more than once at a time.
-                printf("%s0x%s  ", indent,
+                printf("%s0x08X  0x%s  ", indent, entry.dwOffset,
                     QWORD2HEX(idx.qwBaseOffset + (QWORD) entry.dwOffset));
                 printf("0x%s  0x%08X  %s\n",
                     QWORD2HEX(idx.qwBaseOffset + (QWORD) entry.dwOffsetField2),
@@ -674,8 +739,9 @@ static int ProcessIndx(FILE *in, int chunk_size)
                     (entry.dwSize & 0x80000000) ? "NO" : "YES");
             }
 
-            if (max != (int) idx.nEntriesInUse)
-                printf("%s**Suppressed %d index entries**\n", indent, idx.nEntriesInUse - max);
+            if (maxlines != (int) idx.nEntriesInUse)
+                printf("%s**Suppressed %d index entries**\n",
+                    indent, idx.nEntriesInUse - maxlines);
 
             break;
 
@@ -691,8 +757,11 @@ static int ProcessIndx(FILE *in, int chunk_size)
 
     printf("\n");
     if (pad)
-        printf("%sThis index contains %d extra bytes of padding.\n", indent, pad);
-
+    {
+        printf("\n%s***ERROR: This chunk contains %d bytes of illegal padding\n"
+            "%sthat is not encapsulated by a FourCC marker.***\n",
+            indent, pad, indent);
+    }
 
 
     if (BytesLeft)
@@ -706,7 +775,7 @@ static int ProcessIndx(FILE *in, int chunk_size)
 // Parse and display frames in the movi list.
 // It will call itself recursively is a 'LIST rec' is encountered.
 
-static int parse_movi(FILE *in, DWORD size)
+static int parse_movi(MFILE *in, DWORD size)
 {
     FOURCC movi_fcc, NewListName;
     DWORD  movi_size, offset, file_movi_size;
@@ -715,10 +784,13 @@ static int parse_movi(FILE *in, DWORD size)
     DWORD  cnt = 4;   // 4 for 'movi'
     int    dcCnt, txCnt, wbCnt, pcCnt, ix2Cnt, defCnt;   // ix1Cnt,
     char   fccbuf[8], *fccptr, ChunkDesc[64];
+    int    maxlines;
 
 
+    maxlines = 2000000000;   // roughly MAX_INT for 32 bit compiler
+    if (SuppressFlag) maxlines = 16;
     dcCnt = txCnt = wbCnt = pcCnt = ix2Cnt = defCnt = 0;  // ix1Cnt = 0;
-    filebase = File64GetBase();
+    filebase = File64GetBase(in);
 
     // print header
     printf("\n%sCkId  Chunk Type                Absolute Location   Length\n", indent);
@@ -729,18 +801,17 @@ static int parse_movi(FILE *in, DWORD size)
         offset = File64GetPos(in);
 
         movi_fcc = ReadFCC(in, &stream);
-        movi_size = read_long(in);
+        movi_size = ReadDWORD(in);
         AbsLoc = filebase + (QWORD) offset;
-
         // reconstitute fourcc
-        fccptr = (char *) &movi_fcc;
+        fccptr = FCC2STR(movi_fcc);
         fccbuf[0] = 0;
         if (stream != -1)    // stream number included
         {
-            if (FIX_LIT(movi_fcc) == 'ix##')
-                sprintf(fccbuf, "ix%02X", stream);
+            if (movi_fcc == 'ix##')
+                sprintf(fccbuf, "ix%02d", stream);
             else
-                sprintf(fccbuf, "%02X%.2s", stream, fccptr + 2);
+                sprintf(fccbuf, "%02d%.2s", stream, fccptr + 2);
         }
         else    // stream number not included
         {
@@ -759,13 +830,13 @@ static int parse_movi(FILE *in, DWORD size)
 
         ChunkDesc[0] = 0;
 
-        switch (FIX_LIT(movi_fcc))
+        switch (movi_fcc)
         {
             case 'LIST':
                 NewListName = ReadFCC(in, NULL);  // should be 'rec ', but we handle them all
                 printf("%sLIST '%.4s'      (Location=0x%s length=0x%08X)\n",
-                        indent, (char *)&NewListName,
-                        QWORD2HEX(File64GetBase() + (QWORD) offset), movi_size);
+                        indent, FCC2STR(NewListName),
+                        QWORD2HEX(File64GetBase(in) + (QWORD) offset), movi_size);
                 OpenLevel();
                 ret = parse_movi(in, file_movi_size);
                 CloseLevel();
@@ -775,23 +846,28 @@ static int parse_movi(FILE *in, DWORD size)
                 break;
 
             case '##db':
-                if (dcCnt++ < 16) strcpy(ChunkDesc, "Uncompressed Video");
+                if (dcCnt++ < maxlines)
+                    strcpy(ChunkDesc, "Uncompressed Video");
                 break;
 
             case '##dc':
-                if (dcCnt++ < 16) strcpy(ChunkDesc, "Compressed Video");
+                if (dcCnt++ < maxlines)
+                    strcpy(ChunkDesc, "Compressed Video");
                 break;
 
             case '##tx':
-                if (txCnt++ < 16) strcpy(ChunkDesc, "Subtitle Text");
+                if (txCnt++ < maxlines)
+                    strcpy(ChunkDesc, "Subtitle Text");
                 break;
 
             case '##wb':
-                if (wbCnt++ < 16) strcpy(ChunkDesc, "Audio");
+                if (wbCnt++ < maxlines)
+                    strcpy(ChunkDesc, "Audio");
                 break;
 
             case '##pc':
-                if (pcCnt++ < 16) strcpy(ChunkDesc, "Palette Change");
+                if (pcCnt++ < maxlines)
+                    strcpy(ChunkDesc, "Palette Change");
                 break;
 
             case 'ix##':
@@ -808,8 +884,8 @@ static int parse_movi(FILE *in, DWORD size)
                     strcpy(tmpstr, "ODML Standard Index");
                     if (idx.bIndexSubType == AVI_INDEX_2FIELD)
                         strcpy(tmpstr, "ODML Frame Index");
-                    printf("%s%s  %.4s %-19s  0x%s  0x%08X\n",
-                          indent, fccbuf, (char *)&idx.dwChunkId,
+                    printf("\n%s%s  %.4s %-19s  0x%s  0x%08X\n",
+                          indent, fccbuf, &idx.dwChunkId,
                           tmpstr, QWORD2HEX(AbsLoc), movi_size);
 
                     // return to previous position
@@ -817,6 +893,7 @@ static int parse_movi(FILE *in, DWORD size)
                 }
 
                 OpenLevel();
+//                printf("\n");
                 ret = ProcessIndx(in, file_movi_size);
 //                ret = hex_dump_chunk(in, movi_size);
                 CloseLevel();
@@ -826,7 +903,8 @@ static int parse_movi(FILE *in, DWORD size)
                 break;
 
             case '##ix':
-                if (ix2Cnt++ < 16) strcpy(ChunkDesc, "Data chunk for timecode stream");
+                if (ix2Cnt++ < maxlines)
+                    strcpy(ChunkDesc, "Data chunk for timecode stream");
                 break;
 
             case 'JUNK':
@@ -834,7 +912,8 @@ static int parse_movi(FILE *in, DWORD size)
                 break;
 
             default:
-                if (defCnt++ < 16) strcpy(ChunkDesc, "Unsupported FourCC tag");
+                if (defCnt++ < maxlines)
+                    strcpy(ChunkDesc, "Unsupported FourCC tag");
                 break;
 
         }
@@ -856,8 +935,10 @@ static int parse_movi(FILE *in, DWORD size)
 
     }
 
-    if (dcCnt > 16) printf("%s**Suppressed %d video frames**\n", indent, dcCnt - 16);
-    if (wbCnt > 16) printf("%s**Suppressed %d audio frames**\n", indent, wbCnt - 16);
+    if (dcCnt > maxlines)
+        printf("%s**Suppressed %d video frames**\n", indent, dcCnt - maxlines);
+    if (wbCnt > maxlines)
+        printf("%s**Suppressed %d audio frames**\n", indent, wbCnt - maxlines);
     printf("\n");
 
 
@@ -867,7 +948,7 @@ static int parse_movi(FILE *in, DWORD size)
 
 // Display the VPRP Video Property Header
 
-static int ProcessVPRP(FILE *in, int chunk_size)
+static int ProcessVPRP(MFILE *in, DWORD chunk_size)
 {
     DWORD i, s, t;
     VideoPropHeader vprp;
@@ -886,8 +967,6 @@ static int ProcessVPRP(FILE *in, int chunk_size)
 
 
     File64Read(in, (char *) &vprp, sizeof(VideoPropHeader));
-
-//    File64SetPos(in, sizeof(VideoPropHeader), SEEK_CUR); vprp.nbFieldPerFrame=1;
 
 
     t = vprp.VideoFormatToken;
@@ -909,7 +988,6 @@ static int ProcessVPRP(FILE *in, int chunk_size)
     for (i = 0; i < vprp.nbFieldPerFrame && s < (DWORD) chunk_size; i++)
     {
         File64Read(in, (char *) &vfld, sizeof(VIDEO_FIELD_DESC));
-//    File64SetPos(in, sizeof(VIDEO_FIELD_DESC), SEEK_CUR);
 
         s += sizeof(VIDEO_FIELD_DESC);
 
@@ -929,7 +1007,7 @@ static int ProcessVPRP(FILE *in, int chunk_size)
 // Read a null terminated string from the file and then display it.
 // Non-printable characters are converted to spaces.
 
-static int ProcessString(FILE *in, int chunk_size)
+static int ProcessString(MFILE *in, DWORD chunk_size)
 {
     char buffer[32];
     int BytesLeft = chunk_size;
@@ -965,7 +1043,7 @@ static int ProcessString(FILE *in, int chunk_size)
 // As far as I can tell, there are several possible elements for the INFO
 // list and all of them are null terminated strings.
 
-static int ProcessINFO(FILE *in, int chunk_size)
+static int ProcessINFO(MFILE *in, DWORD chunk_size)
 {
     DWORD offset = File64GetPos(in);
     DWORD end_of_chunk = offset + chunk_size - 4;
@@ -976,11 +1054,11 @@ static int ProcessINFO(FILE *in, int chunk_size)
     while (offset < end_of_chunk)
     {
         InfoName = ReadFCC(in, NULL);
-        InfoSize = read_long(in);    // length of list element
+        InfoSize = ReadDWORD(in);    // length of list element
         if (InfoSize & 0x00000001) InfoSize++;
 
 
-        printf("%s%s(%.4s): ", indent, LookupINFO(InfoName), (char *)&InfoName);
+        printf("%s%s(%.4s): ", indent, LookupINFO(InfoName), FCC2STR(InfoName));
         ret = ProcessString(in, InfoSize);
         if (ret) return(ret);
 
@@ -996,7 +1074,7 @@ static int ProcessINFO(FILE *in, int chunk_size)
 // every implementation also adds a 61 DWORD "reserved" field.  This function
 // will handle all sizes.
 
-static int ProcessDmlh(FILE *in, int chunk_size)
+static int ProcessDmlh(MFILE *in, DWORD chunk_size)
 {
     AVIEXTHEADER rec;
     DWORD rb, BytesLeft, br;
@@ -1012,12 +1090,18 @@ static int ProcessDmlh(FILE *in, int chunk_size)
         return(-1);
     }
 
-    // move to end of chunk if necessary
-    if (BytesLeft)
-        File64SetPos(in, BytesLeft, SEEK_CUR);
-
     printf("%sGrand Total of All Frames in File: %u\n",
             indent, rec.dwTotalFrames);
+
+    // move to end of chunk if necessary
+    if (BytesLeft)
+    {
+        File64SetPos(in, BytesLeft, SEEK_CUR);
+        printf("\n%s***ERROR: This chunk contains %d bytes of illegal padding\n"
+            "%sthat is not encapsulated by a FourCC marker.***\n",
+            indent, BytesLeft, indent);
+
+    }
 
     return(0);
 }
@@ -1030,23 +1114,22 @@ static int ProcessDmlh(FILE *in, int chunk_size)
 // Title and indentation applied before calling.
 // This function is called recursively.
 
-static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
+static int parse_list(MFILE *in, FOURCC ListName, DWORD ListLen)
 {
     DWORD NewListName, StrhType = 0;
     int ret;  //, chunk_size, ret;
     DWORD ListElem, ListElemSize;
     DWORD end_of_chunk;
     DWORD offset = File64GetPos(in);
-    DWORD FixedListName, FixedStrhType;
+    DWORD FixedStrhType;
 
-    FixedListName = FIX_LIT(ListName);
-    if (FixedListName == 'movi')    // special case for movi lists
+    if (ListName == 'movi')    // special case for movi lists
     {
         G_movi_offset = offset;     // changes with each new movi list
         ret = parse_movi(in, ListLen);
         return(ret);
     }
-    else if (FixedListName == 'INFO')    // spcial case for INFO lists
+    else if (ListName == 'INFO')    // spcial case for INFO lists
     {
         ret = ProcessINFO(in, ListLen);
        return(ret);
@@ -1057,17 +1140,19 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
     while (offset < end_of_chunk)
     {
         ListElem = ReadFCC(in, NULL);    // get next list element
-        ListElemSize = read_long(in);    // length of list element
+        ListElemSize = ReadDWORD(in);    // length of list element
 
-// printf("ListElem: %.4s\n", (char *)&ListElem);
+// printf("ListElem: %.4s\n", FCC2STR(ListElem));
 
-        switch (FIX_LIT(ListElem))
+        switch (ListElem)
         {
             case 'LIST':     // yep, its recursive
                 NewListName = ReadFCC(in, NULL);
-                printf("%sAVI LIST '%.4s' Element '%.4s' (Location=0x%s length=0x%06X)\n",
-                        indent, (char *)&ListName, (char *)&NewListName,
-                        GetOffsetStr(offset), ListElemSize);
+                printf("%sAVI LIST '%.4s' ",
+                        indent, FCC2STR(ListName));
+                printf("Element '%.4s' (Location=0x%s length=0x%06X)\n",
+                        FCC2STR(NewListName),
+                        GetOffsetStr(in, offset), ListElemSize);
                 OpenLevel();
                 ret = parse_list(in, NewListName, ListElemSize);
                 CloseLevel();
@@ -1075,7 +1160,8 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                 break;
 
             case 'avih':     // AVI header
-                if (FixedListName != 'hdrl') goto syntax;
+//printf("case 'avih' ListName=%.4s\n", FCC2STR(ListName));
+                if (ListName != 'hdrl') goto syntax;
                 printf("%sAVI Main Header 'avih' (Location=0x%08X length=0x%06X)\n",
                         indent, offset, ListElemSize);
                 OpenLevel();
@@ -1085,13 +1171,13 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                 break;
 
             case 'strh':
-                if (FixedListName != 'strl') goto syntax;
+                if (ListName != 'strl') goto syntax;
                 // Peek at stream type
                 StrhType = ReadFCC(in, NULL);    // should be  'vids' or 'auds'
-                FixedStrhType = FIX_LIT(StrhType); // used for strf
+                FixedStrhType = StrhType; // used for strf
                 File64SetPos(in, -4, SEEK_CUR);   // move FP back
                 printf("%sAVI 'strh' Stream Header for '%.4s' (Location=0x%08X length=0x%06X)\n",
-                        indent, (char *)&StrhType,
+                        indent, FCC2STR(StrhType),
                         offset, ListElemSize);
                 OpenLevel();
                 if (FixedStrhType != 'vids' &&
@@ -1099,7 +1185,7 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                     FixedStrhType != 'txts')  // unknown
                 {
                     printf("%sUnsupported Stream Header 'strh' type %.4s\n",
-                              indent, (char *)&StrhType);
+                              indent, FCC2STR(StrhType));
                     File64SetPos(in, ListElemSize, SEEK_CUR);
                     break;
                 }
@@ -1110,9 +1196,9 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                 break;
 
             case 'strf':
-                if (FixedListName != 'strl') goto syntax;
+                if (ListName != 'strl') goto syntax;
                 printf("%sAVI 'strf' Stream Format for '%.4s' (Location=0x%08X length=0x%06X)\n",
-                        indent, (char *)&StrhType,
+                        indent, FCC2STR(StrhType),
                         offset, ListElemSize);
                 OpenLevel();
                 if (FixedStrhType == 'vids')  // video
@@ -1134,14 +1220,15 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                 {
                     if (StrhType == 0)
                         printf("*** 'strf' without preceeding 'strh'\n");
-                    else printf("*** Unsupported Stream Format '%.4s'\n", (char *)&StrhType);
+                    else printf("*** Unsupported Stream Format '%.4s'\n",
+                                FCC2STR(StrhType));
                     File64SetPos(in, ListElemSize, SEEK_CUR);
                 }
                 CloseLevel();
                 break;
 
             case 'vprp':        // video properties header
-                if (FixedListName != 'strl') goto syntax;
+                if (ListName != 'strl') goto syntax;
                 printf("%sAVI 'vprp' Video Property Header (Location=0x%08X length=0x%06X)\n",
                         indent, offset, ListElemSize);
                 OpenLevel();
@@ -1151,7 +1238,7 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                 break;
 
             case 'dmlh':
-                if (FixedListName != 'odml') goto syntax;
+                if (ListName != 'odml') goto syntax;
                 printf("%sAVI 'dmlh' Extended Header (Location=0x%08X length=0x%06X)\n",
                         indent,
                         offset, ListElemSize);
@@ -1162,7 +1249,7 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
                 break;
 
             case 'strn':      // null terminated string stream name
-                if (FixedListName != 'strl') goto syntax;
+                if (ListName != 'strl') goto syntax;
                 printf("%sStream Name(strn): ", indent);
                 ret = ProcessString(in, ListElemSize);
                 if (ret) return(ret);
@@ -1170,7 +1257,7 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
 
 
             case 'strd':
-                if (FixedListName != 'strl') goto syntax;
+                if (ListName != 'strl') goto syntax;
                 printf("%sAVI 'strd' Stream Data (Location=0x%08X length=0x%06X)\n",
                         indent,
                         offset, ListElemSize);
@@ -1193,7 +1280,7 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
 
 
             case 0:  // special case for PRMI
-                if (FixedListName == 'PRMI')
+                if (ListName == 'PRMI')
                 {
                     printf("%sPRMI: ", indent);
                     ret = ProcessString(in, ListElemSize);
@@ -1205,11 +1292,11 @@ static int parse_list(FILE *in, FOURCC ListName, DWORD ListLen)
             case 'JUNK':
             default:
                 printf("%sAVI '%.4s' Chunk (Location=0x%s length=0x%06X)\n",
-                        indent, (char *)&ListElem,
-                        GetOffsetStr(offset), ListElemSize);
+                        indent, FCC2STR(ListElem),
+                        GetOffsetStr(in, offset), ListElemSize);
                 OpenLevel();
                 printf("%sSkipping %d %.4s bytes.\n", indent,
-                    ListElemSize, (char *)&ListElem);
+                    ListElemSize, FCC2STR(ListElem));
                 CloseLevel();
                 File64SetPos(in, ListElemSize, SEEK_CUR);
                 break;
@@ -1231,7 +1318,7 @@ syntax:
 // Process the AVI or AVIX file
 // We accept LIST and idx1, eveything else is treated as JUNK.
 
-static int ProcessAVI(FILE *in, DWORD riff_size)
+static int ProcessAVI(MFILE *in, DWORD riff_size)
 {
     DWORD fcc_id, chunk_size, ListName;
     DWORD offset, endofs;
@@ -1244,16 +1331,16 @@ static int ProcessAVI(FILE *in, DWORD riff_size)
     while (offset < endofs)
     {
         fcc_id = ReadFCC(in, NULL);   // LIST, idx1, etc
-        chunk_size = read_long(in);
+        chunk_size = ReadDWORD(in);
 
-        switch (FIX_LIT(fcc_id))
+        switch (fcc_id)
         {
             case 'LIST':         // get list type
                 ListName = ReadFCC(in, NULL);
 
                 printf("%sAVI LIST '%.4s' (Location=0x%s length=0x%06X)\n",
-                            indent, (char *)&ListName,
-                            GetOffsetStr(offset), chunk_size);
+                            indent, FCC2STR(ListName),
+                            GetOffsetStr(in, offset), chunk_size);
                 OpenLevel();
                 ret = parse_list(in, ListName, chunk_size);
                 CloseLevel();
@@ -1271,7 +1358,7 @@ static int ProcessAVI(FILE *in, DWORD riff_size)
 
             case 'DISP':    // junk
                 printf("%sAVI 'DISP' Chunk (Location=0x%s length=0x%08X)\n",
-                        indent, GetOffsetStr(offset), chunk_size);
+                        indent, GetOffsetStr(in, offset), chunk_size);
                 OpenLevel();
                 ret = hex_dump_chunk(in, chunk_size);
                 if (ret) return(ret);
@@ -1281,9 +1368,10 @@ static int ProcessAVI(FILE *in, DWORD riff_size)
             case 'JUNK':    // junk
             default:  // unsupported
                 printf("%sAVI '%.4s' Chunk (Location=0x%s length=0x%08X)\n",
-                        indent, (char *)&fcc_id, GetOffsetStr(offset), chunk_size);
+                        indent, FCC2STR(fcc_id), GetOffsetStr(in, offset), chunk_size);
                 OpenLevel();
-                printf("%sSkipping %d '%.4s' bytes.\n", indent, chunk_size, (char *)&fcc_id);
+                printf("%sSkipping %d '%.4s' bytes.\n", indent,
+                        chunk_size, FCC2STR(fcc_id));
                 CloseLevel();
                 File64SetPos(in, chunk_size, SEEK_CUR);
                 break;
@@ -1297,33 +1385,38 @@ static int ProcessAVI(FILE *in, DWORD riff_size)
 
 
 
-static void parse_riff(FILE *in)
+static void parse_riff(MFILE *in)
 {
     int fcc_id, fcc_type, riff_size, riff_count = 0;
+    QWORD AbsFp;
 
     while ((fcc_id = ReadFCC(in, NULL)) != -1)  // should be RIFF
     {
-        riff_size = read_long(in);
+        riff_size = ReadDWORD(in);
 
-        if (FIX_LIT(fcc_id) != 'RIFF')
+        if (fcc_id != 'RIFF')
         {
-            if (riff_count == 0) printf("'RIFF' tag missing.  This is not a AVI/RIFF file.\n");
+            if (riff_count == 0)
+                printf("'RIFF' tag missing.  "
+                       "This is not a AVI/RIFF file. Got %.4s.\n",
+                        FCC2STR(fcc_id));
             else printf("Unexpected garbage detected at end of file.\n");
             return;
         }
 
         fcc_type = ReadFCC(in, NULL);
-        switch (FIX_LIT(fcc_type))
+        switch (fcc_type)
         {
             case 'AVIX':
                 // Set current base file pointer
-                File64SetBase(in, -12);   // set to start of RIFF
+                AbsFp = File64GetBase(in) + (QWORD) File64GetPos(in) - 12;
+                File64SetBase(in, AbsFp);   // set to start of RIFF
                 // fall through
 
             case 'AVI ':
                 riff_count++;
                 printf("%sRIFF#%d %.4s (Base=0x%s Length=0x%08X)\n", indent,
-                    riff_count, (char *)&fcc_type, QWORD2HEX(File64GetBase()),
+                    riff_count, FCC2STR(fcc_type), QWORD2HEX(File64GetBase(in)),
                     riff_size);
                 OpenLevel();      // increase nested level
                 ProcessAVI(in, riff_size); // Process AVI or AVIX
@@ -1344,7 +1437,7 @@ static void parse_riff(FILE *in)
 
 int main(int argc, char *argv[])
 {
-    FILE *in ;
+    MFILE *in ;
 
     printf("\n"
            "Display the contents and file structure of an AVI file.\n"
@@ -1354,15 +1447,17 @@ int main(int argc, char *argv[])
 #else
              "files that are bigger than 4GB.\n\n"
 #endif
-           "RdAvi2 - RIFF AVI 2 Format Reader (April 18, 2024) By Dennis Hawkins\n"
-           "Version 1.01 released on July 23, 2024.\n"
-           "Based on readavi by Michael Kohn (http://www.mikekohn.net)\n"
-           "Copyright 2024 by Dennis Hawkins, BSD License applies.\n\n");
+           "RdAvi2 - RIFF AVI 2 Format Reader\n"
+           "First released April 18, 2024 By Dennis Hawkins\n"
+           "Version %s released on %s.\n"
+           "Inspired by readavi by Michael Kohn (http://www.mikekohn.net)\n"
+           "Copyright %s by Dennis Hawkins, BSD License applies.\n\n",
+           VERSION, RELEASE_DATE, COPYRIGHT);
 
-    if (argc != 2)
+    if (argc < 2)
     {
-        printf("Usage: rdavi2 <filename>\n\n");
-        printf("Currently, there are no command line options defined.\n\n");
+        printf("Usage: rdavi2 <filename> [-a]\n\n");
+        printf("-a Print all entries, do not suppress frames.\n\n");
         exit(0);
     }
 
@@ -1373,6 +1468,16 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    if (argc == 3)  // possible command line option
+    {
+        if (memcmp(argv[2], "-a", 3) == 0)
+        {
+            SuppressFlag = FALSE;
+        }
+    }
+
+    printf("Reading: %s\n\n", argv[1]);
+
 
     parse_riff(in);
 
@@ -1380,6 +1485,8 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
+
 
 
 
