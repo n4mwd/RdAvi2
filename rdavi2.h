@@ -1,5 +1,5 @@
 /*
-RdAvi2.exe - Copyright (c) 2024 by Dennis Hawkins. All rights reserved.
+RdAvi2.exe - Copyright (c) 2025 by Dennis Hawkins. All rights reserved.
 Inspired by: ReadAvi.exe by Michael Kohn<mike@mikekohn.net> (http://www.mikekohn.net/)
 
 BSD License
@@ -19,96 +19,124 @@ Although not required, attribution is requested for any source code
 used by others.
 */
 
-#if defined(__GNUC__)
-#error GCC is not tested.  Comment out this line and compile at your own risk.
-#define __TINYC__
+//#define VERSION   "1.0.1"
+//#define RELEASE_DATE   "July 23, 2024"
+#define VERSION   "1.0.2"
+#define RELEASE_DATE "February 9, 2026"
+#define COPYRIGHT    "2024-2026"
+
+
+#if defined(__GNUC__) || defined(__MINGW32__) || defined(__MINGW64__) || defined(__TINYC__)
+    #pragma GCC diagnostic ignored "-Wmultichar"
+
+    // Large File Support for MinGW/Linux
+    #define _FILE_OFFSET_BITS 64
+    #ifndef _LARGEFILE64_SOURCE
+        #define _LARGEFILE64_SOURCE 1
+    #endif
+
+    // Use standard types to avoid "redefinition" errors
+    #include <stdint.h>
+    typedef uint64_t  QWORD;
+    typedef int64_t   QINT;
+    typedef int32_t   LONG; // Guaranteed 4 bytes regardless of 32/64 bit
+    typedef uint32_t  FOURCC;
+    typedef uint32_t  DWORD;
+
+    #define ASSERT_SIZE(type, expected_size) \
+        _Static_assert(sizeof(type) == (expected_size), #type " size mismatch")
+
+    #ifndef min
+        #define min(a,b) (((a) < (b)) ? (a) : (b))
+    #endif
+
+    #if defined(__TINYC__)
+        static inline uint32_t __builtin_bswap32(uint32_t x)
+        {
+            __asm__ ("bswap %0" : "=r" (x) : "0" (x));
+            return x;
+        }
+    #endif
+    #define FIX_LIT(n) ((uint32_t)__builtin_bswap32(n))
+    #define FCC2STR(n) Fcc2Str(n)
 #endif
 
-#if defined(__clang__)
-#error clang is not tested.  Comment out this line and compile at your own risk.
-#define __TINYC__
-#endif
 
-#if defined(__TINYC__)
-  // TINYC is a 64 bit compiler.
-  #pragma pack(push, 1)
-  #define NO_HUGE_FILES
-  #define min(X, Y) (((X) < (Y)) ? (X) : (Y))
-  typedef unsigned long long QWORD;   // different
-
-#endif
 
 #if defined(__BORLANDC__)
   // Borland C is a 32bit compiler.
   typedef unsigned __int64 QWORD;     // different
-#endif
-
-#if defined(__WIN32__)        // Large file support via windows calls
-  #include <windows.h>
-  #include <stdio.h>
-  #include <io.h>
-#else
-  #include <stdio.h>
-  #include <string.h>
-  #include <stdlib.h>
-  #include <ctype.h>
-  #include <sys/types.h>
-  #include <sys/stat.h>
-  #define FALSE  0
-  #define TRUE   !FALSE
-
-  typedef unsigned int   FOURCC;
-  typedef unsigned int   DWORD;
-  typedef int            LONG;     // long is 8 bytes on 64bit compilers, must be 4 bytes here.
-  typedef unsigned short WORD;
-  typedef unsigned char  BYTE;
-
-  typedef struct
-  {
-      LONG left;
-      LONG top;
-      LONG right;
-      LONG bottom;
-  } RECT;
-
-  typedef struct
-  {
-      WORD Left;
-      WORD Top;
-      WORD Right;
-      WORD Bottom;
-  } SMALL_RECT;
-
-  typedef struct
-  {
-      DWORD Data1;
-      WORD Data2;
-      WORD Data3;
-      BYTE Data4[8];
-  } GUID;
-
+  typedef signed   __int64 QINT;
+  typedef long             LONG;     // long is 8 bytes on 64bit compilers, must be 4 bytes here.
+  typedef unsigned int     FOURCC;
+  typedef unsigned int     DWORD;
+  #define ASSERT_SIZE(type, expected_size) \
+    typedef char type##_size_check[(sizeof(type) == (expected_size)) ? 1 : -1]
+  #define FIX_LIT(n) (n)
+  #define FCC2STR(n) ((char *)&(n))
 #endif
 
 
-// *********** Uncomment define before to only allow files < 4GB
-//#define NO_HUGE_FILES
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <assert.h>
+#define FALSE  0
+#define TRUE   !FALSE
 
+typedef unsigned short WORD;
+typedef unsigned char  BYTE;
 
-// Test whether compiler uses LE or BE order for multi-character literals
-#if '0123' == 0x33323130
-  #define LE_MC_LIT   // Borland LE
-#else
-  #define BE_MC_LIT   // Most other compilers BE
+#ifdef __GNUC__
+    #pragma pack(push, 1)
+#elif defined(__BORLANDC__)
+    /* Switch to 1-byte alignment */
+    #pragma option -a1
 #endif
 
-#if defined(BE_MC_LIT)    // make sure literal is in Little Endian Order
-  // must reverse
-  #define FIX_LIT(x)  ReverseLiteral((DWORD)(x))
-#else
-  #define FIX_LIT(x)  ((DWORD)(x))
-#endif
+ASSERT_SIZE(QWORD, 8);
+ASSERT_SIZE(DWORD, 4);
+ASSERT_SIZE(LONG, 4);
+ASSERT_SIZE(WORD, 2);
+ASSERT_SIZE(BYTE, 1);
+
 
 #define WAVE_FORMAT_EXTENSIBLE 0xFFFE
+
+typedef struct
+{
+    LONG left;
+    LONG top;
+    LONG right;
+    LONG bottom;
+} RECT;
+
+typedef struct
+{
+    WORD Left;
+    WORD Top;
+    WORD Right;
+    WORD Bottom;
+} SMALL_RECT;
+
+typedef struct
+{
+    DWORD Data1;
+    WORD Data2;
+    WORD Data3;
+    BYTE Data4[8];
+} GUID;
+
+
+
+typedef struct
+{
+    FILE *fp;
+    QWORD SeekBase;   // Base File Pointer
+} MFILE;
 
 
 
@@ -354,6 +382,13 @@ typedef struct
 } SUPERINDEXENTRY;
 
 
+#ifdef __GNUC__
+    #pragma pack(pop)
+#elif defined(__BORLANDC__)
+    /* Restore to default alignment (usually 4 or 8) */
+    #pragma option -a. 
+#endif
+
 // codecs.c prototypes
 
 char *LookupFourCC(DWORD InFcc);
@@ -363,20 +398,33 @@ char *LookupINFO(DWORD Info);
 
 // File64.c prototypes
 
-void   File64SetBase(FILE *fp, int delta);
-QWORD  File64GetBase(void);
-FILE  *File64Open(char *fname, char *mode);
-void   File64Close(FILE *fp);
-size_t File64Read(FILE *fp, void *buffer, int len);
-int    File64SetPos(FILE *fp, LONG offset, int whence);
-DWORD  File64GetPos(FILE *fp);
+// Exported functions
+void File64SetBase(MFILE *fp, QWORD NewBase);
+QWORD File64GetBase(MFILE *fp);
+MFILE *File64Open(char *fname, char *mode);
+int  File64Close(MFILE *mfp);
+size_t File64Read(MFILE *mfp, void *buffer, int len);
+size_t File64Write(MFILE *mfp, void *buffer, int len);
+int File64Qseek(MFILE *mfp, QWORD AbsAddr);
+int File64SetPos(MFILE *mfp, LONG offset, int whence);
+DWORD File64GetPos(MFILE *mfp);
+BYTE File64Getchar(MFILE *mfp);
+BYTE File64Putchar(MFILE *mfp, BYTE ch);
+FOURCC ReadFCC(MFILE *in, int *StreamNum);
+int WriteFCC(MFILE *out, FOURCC fccval, int StreamNum);
+
 DWORD  ReverseLiteral(DWORD val);
 
 
 // FileUtil.c prototypes
 
 char *QWORD2HEX(QWORD val);
-LONG read_long(FILE *in);
-FOURCC ReadFCC(FILE *in, int *StreamNum);
+DWORD ReadDWORD(MFILE *in);
+//FOURCC ReadFCC(FILE *in, int *StreamNum);
+
+
+
+
+
 
 
